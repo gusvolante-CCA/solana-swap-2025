@@ -1,12 +1,10 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token, TokenAccount, transfer, Transfer, TransferChecked};
+use anchor_spl::token::{Mint, Token, TokenAccount, transfer, Transfer};
 
-declare_id!("C3RC2picGe1SRyYNny7bVWCtVc5qizqd7XBMErby2J6V");
+declare_id!("4NJdkGtXNTfUZLsuovwgAYx9umgfpxrc8YbZwFmgjE8s");
 
 #[program]
 pub mod solana_swap_2025 {
-    use std::ops::Mul;
-
     use super::*;
 
     pub fn initialize_market(
@@ -34,9 +32,6 @@ pub mod solana_swap_2025 {
     }
 
     pub fn add_liquidity(ctx: Context<AddLiquidity>, amount_a: u64, amount_b: u64) -> Result<()> {
-        let market = &mut ctx.accounts.market;
-        let vault_a = &mut ctx.accounts.vault_a;
-        let vault_b = &mut ctx.accounts.vault_b;
         if amount_a > 0 {
             let cpi_accounts = Transfer {
                 from: ctx.accounts.autority_token_a.to_account_info(),
@@ -60,7 +55,7 @@ pub mod solana_swap_2025 {
 
     pub fn swap(ctx: Context<Swap>, amount: u64, a_to_b: bool) -> Result<()> {
         let market = &mut ctx.accounts.market;
-        if (a_to_b) {
+        if a_to_b {
             let cpi_accounts = Transfer {
                 from: ctx.accounts.user_token_a.to_account_info(),
                 to: ctx.accounts.vault_a.to_account_info(),
@@ -97,10 +92,46 @@ pub mod solana_swap_2025 {
             transfer(CpiContext::new_with_signer(cpi_program2, 
                 cpi_account2, signer_seeds), amount_b)?;
         } else {
-            
+            // El usuario entrega tokens B y recibe tokens A
+            let cpi_accounts = Transfer {
+                from: ctx.accounts.user_token_b.to_account_info(),
+                to: ctx.accounts.vault_b.to_account_info(),
+                authority: ctx.accounts.user.to_account_info(),
+            };
+            let cpi_program = ctx.accounts.token_program.to_account_info();
 
-            // TODO: Implement reverse swap
+            transfer(CpiContext::new(cpi_program, cpi_accounts), amount)?;
 
+            let cpi_account2 = Transfer {
+                from: ctx.accounts.vault_a.to_account_info(),
+                to: ctx.accounts.user_token_a.to_account_info(),
+                authority: market.to_account_info(),
+            };
+            const PRICE_DECIMAL_FACTOR: u128 = 10_u128.pow(6);
+
+            if market.price == 0 {
+                return Err(MySwapError::InvalidPriceForReverseSwap.into());
+            }
+
+            let amount_a: u64 = ((amount as u128)
+            .checked_mul(PRICE_DECIMAL_FACTOR)
+            .ok_or(MySwapError::CalculationOverflow)?
+            .checked_mul(10u128.pow(market.decimals_a as u32))
+            .ok_or(MySwapError::CalculationOverflow)?
+            .checked_div(market.price as u128)
+            .ok_or(MySwapError::CalculationOverflow)?
+            .checked_div(10u128.pow(market.decimals_a as u32))
+            .ok_or(MySwapError::CalculationOverflow)?) as u64;
+
+            let cpi_program2 = ctx.accounts.token_program.to_account_info();
+            let signer_seeds: &[&[&[u8]]] = &[&[
+                b"market",
+                market.token_mint_a.as_ref(),
+                market.token_mint_b.as_ref(),
+                &[market.bump],
+            ]];
+            transfer(CpiContext::new_with_signer(cpi_program2,
+                cpi_account2, signer_seeds), amount_a)?;
         }
         Ok(())
     }   
